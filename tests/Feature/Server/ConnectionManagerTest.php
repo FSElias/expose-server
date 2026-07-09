@@ -149,6 +149,47 @@ class ConnectionManagerTest extends TestCase
         $this->assertNull($manager->getHttpConnectionForRequestId('request-one'));
     }
 
+    /** @test */
+    public function it_marks_new_proxy_requests_as_reusable()
+    {
+        $socket = $this->mockSocketConnection();
+        $socket->shouldReceive('send')
+            ->once()
+            ->withArgs(function ($message) {
+                $payload = json_decode($message);
+
+                return $payload->event === 'createProxy'
+                    && $payload->data->request_id === 'request-one'
+                    && $payload->data->reusable === true;
+            });
+
+        $connection = new ControlConnection($socket, '127.0.0.1:8085', 'shared', 'client-one', 'localhost');
+
+        $connection->registerProxy('request-one');
+    }
+
+    /** @test */
+    public function it_reuses_idle_proxy_connections()
+    {
+        $socket = $this->mockSocketConnection();
+        $socket->shouldNotReceive('send');
+
+        $connection = new ControlConnection($socket, '127.0.0.1:8085', 'shared', 'client-one', 'localhost');
+        $proxy = Mockery::mock(ConnectionInterface::class);
+
+        $connection->releaseProxy($proxy);
+
+        $resolvedProxy = null;
+        $connection->once('proxy_ready_request-one', function (ConnectionInterface $proxy) use (&$resolvedProxy) {
+            $resolvedProxy = $proxy;
+        });
+
+        $connection->registerProxy('request-one');
+
+        $this->assertSame($proxy, $resolvedProxy);
+        $this->assertSame('request-one', $proxy->request_id);
+    }
+
     protected function mockSocketConnection(): ConnectionInterface
     {
         $connection = Mockery::mock(ConnectionInterface::class);

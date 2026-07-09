@@ -55,6 +55,14 @@ class ControlMessageController implements MessageComponentInterface
      */
     public function onClose(ConnectionInterface $connection)
     {
+        if (isset($connection->proxy_client_id)) {
+            $connectionInfo = $this->connectionManager->findControlConnectionForClientId($connection->proxy_client_id);
+
+            if ($connectionInfo !== null) {
+                $connectionInfo->removeProxy($connection);
+            }
+        }
+
         if (isset($connection->request_id)) {
             $httpConnection = $this->connectionManager->getHttpConnectionForRequestId($connection->request_id);
             if ($httpConnection !== null) {
@@ -70,6 +78,10 @@ class ControlMessageController implements MessageComponentInterface
      */
     public function onMessage(ConnectionInterface $connection, $msg)
     {
+        if ($this->handleProxyControlMessage($connection, $msg)) {
+            return;
+        }
+
         if (isset($connection->request_id)) {
             return $this->sendResponseToHttpConnection($connection->request_id, $msg);
         }
@@ -97,6 +109,43 @@ class ControlMessageController implements MessageComponentInterface
         if ($httpConnection !== null) {
             $httpConnection->send($response);
         }
+    }
+
+    protected function handleProxyControlMessage(ConnectionInterface $connection, $msg): bool
+    {
+        if (method_exists($msg, 'isBinary') && $msg->isBinary()) {
+            return false;
+        }
+
+        $payload = json_decode((string) $msg);
+
+        if (($payload->event ?? null) !== 'proxyComplete') {
+            return false;
+        }
+
+        $requestId = $connection->request_id ?? ($payload->data->request_id ?? null);
+
+        if ($requestId !== null) {
+            $httpConnection = $this->connectionManager->getHttpConnectionForRequestId($requestId);
+
+            if ($httpConnection !== null) {
+                $httpConnection->close();
+            }
+
+            $this->connectionManager->removeHttpConnection($requestId);
+        }
+
+        $clientId = $connection->proxy_client_id ?? ($payload->data->client_id ?? null);
+
+        if ($clientId !== null) {
+            $connectionInfo = $this->connectionManager->findControlConnectionForClientId($clientId);
+
+            if ($connectionInfo !== null) {
+                $connectionInfo->releaseProxy($connection);
+            }
+        }
+
+        return true;
     }
 
     protected function authenticate(ConnectionInterface $connection, $data)
@@ -254,6 +303,7 @@ class ControlMessageController implements MessageComponentInterface
     protected function registerProxy(ConnectionInterface $connection, $data)
     {
         $connection->request_id = $data->request_id;
+        $connection->proxy_client_id = $data->client_id;
 
         $connectionInfo = $this->connectionManager->findControlConnectionForClientId($data->client_id);
 

@@ -20,6 +20,7 @@ class ControlConnection
     public $client_version;
     public $message;
     public $proxies = [];
+    public $idleProxies = [];
     protected $shared_at;
 
     public function __construct(ConnectionInterface $socket, string $host, string $subdomain, string $clientId, string $serverHost, string $authToken = '')
@@ -46,6 +47,16 @@ class ControlConnection
 
     public function registerProxy($requestId)
     {
+        if ($proxy = $this->getIdleProxy()) {
+            $proxy->request_id = $requestId;
+
+            $this->emit('proxy_ready_'.$requestId, [
+                $proxy,
+            ]);
+
+            return;
+        }
+
         $this->socket->send(json_encode([
             'event' => 'createProxy',
             'data' => [
@@ -53,8 +64,32 @@ class ControlConnection
                 'subdomain' => $this->subdomain,
                 'request_id' => $requestId,
                 'client_id' => $this->client_id,
+                'reusable' => true,
             ],
         ]));
+    }
+
+    public function releaseProxy(ConnectionInterface $proxy): void
+    {
+        unset($proxy->request_id);
+
+        $this->idleProxies[spl_object_id($proxy)] = $proxy;
+    }
+
+    public function removeProxy(ConnectionInterface $proxy): void
+    {
+        unset($this->idleProxies[spl_object_id($proxy)]);
+    }
+
+    protected function getIdleProxy(): ?ConnectionInterface
+    {
+        while ($proxy = array_pop($this->idleProxies)) {
+            if ($proxy instanceof ConnectionInterface) {
+                return $proxy;
+            }
+        }
+
+        return null;
     }
 
     public function closeWithoutReconnect()
